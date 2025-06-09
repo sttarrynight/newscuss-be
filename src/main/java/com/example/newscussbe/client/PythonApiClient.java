@@ -3,7 +3,6 @@ package com.example.newscussbe.client;
 import com.example.newscussbe.dto.KeywordSummaryResponseDto;
 import com.example.newscussbe.dto.Message;
 import com.example.newscussbe.dto.TopicResponseDto;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,7 +21,6 @@ import org.springframework.web.client.RestTemplate;
 public class PythonApiClient {
 
     private final RestTemplate restTemplate;
-    private final ObjectMapper objectMapper;
 
     @Value("${python.api.base-url}")
     private String pythonApiBaseUrl;
@@ -43,6 +41,7 @@ public class PythonApiClient {
         log.info("Calling Python API: {} with URL: {}", endpoint, url);
 
         try {
+            @SuppressWarnings("unchecked")
             Map<String, Object> response = restTemplate.postForObject(endpoint, request, Map.class);
 
             if (response != null) {
@@ -81,6 +80,7 @@ public class PythonApiClient {
         log.info("Calling Python API: {} for topic generation", endpoint);
 
         try {
+            @SuppressWarnings("unchecked")
             Map<String, Object> response = restTemplate.postForObject(endpoint, request, Map.class);
 
             if (response != null) {
@@ -120,6 +120,7 @@ public class PythonApiClient {
         log.info("Calling Python API: {} to start discussion", endpoint);
 
         try {
+            @SuppressWarnings("unchecked")
             Map<String, Object> response = restTemplate.postForObject(endpoint, request, Map.class);
 
             if (response != null) {
@@ -155,6 +156,7 @@ public class PythonApiClient {
         log.info("Calling Python API: {} for AI response", endpoint);
 
         try {
+            @SuppressWarnings("unchecked")
             Map<String, Object> response = restTemplate.postForObject(endpoint, request, Map.class);
 
             if (response != null) {
@@ -188,10 +190,47 @@ public class PythonApiClient {
         log.info("Calling Python API: {} for discussion summary", endpoint);
 
         try {
+            @SuppressWarnings("unchecked")
             Map<String, Object> response = restTemplate.postForObject(endpoint, request, Map.class);
 
             if (response != null) {
                 return (String) response.get("summary");
+            } else {
+                log.error("Empty response from Python API");
+                throw new RuntimeException("Failed to get response from Python API");
+            }
+        } catch (Exception e) {
+            log.error("Error calling Python API", e);
+            throw new RuntimeException("Failed to call Python API", e);
+        }
+    }
+
+    /**
+     * 토론 피드백 생성 (새로 추가)
+     */
+    public Map<String, Object> generateFeedback(String topic, String userPosition, String aiPosition, List<Message> messages) {
+        String endpoint = pythonApiBaseUrl + "/discussion/feedback";
+
+        Map<String, Object> requestMap = new HashMap<>();
+        requestMap.put("topic", topic);
+        requestMap.put("userPosition", userPosition);
+        requestMap.put("aiPosition", aiPosition);
+        requestMap.put("messages", messages);
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestMap, headers);
+
+        log.info("Calling Python API: {} for discussion feedback", endpoint);
+
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> response = restTemplate.postForObject(endpoint, request, Map.class);
+
+            if (response != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> feedback = (Map<String, Object>) response.get("feedback");
+                return feedback;
             } else {
                 log.error("Empty response from Python API");
                 throw new RuntimeException("Failed to get response from Python API");
