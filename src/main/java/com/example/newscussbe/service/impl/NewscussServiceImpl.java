@@ -2,6 +2,7 @@ package com.example.newscussbe.service.impl;
 
 import com.example.newscussbe.client.PythonApiClient;
 import com.example.newscussbe.dto.DiscussionResponseDto;
+import com.example.newscussbe.dto.FeedbackResponseDto;
 import com.example.newscussbe.dto.KeywordSummaryResponseDto;
 import com.example.newscussbe.dto.Message;
 import com.example.newscussbe.dto.MessageResponseDto;
@@ -12,8 +13,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -156,6 +160,48 @@ public class NewscussServiceImpl implements NewscussService {
     }
 
     @Override
+    public FeedbackResponseDto generateFeedback(String sessionId) {
+        log.info("Generating feedback for session: {}", sessionId);
+
+        SessionData sessionData = getSessionData(sessionId);
+
+        // 메시지가 충분히 있는지 확인 (최소 2개 이상의 사용자 메시지)
+        long userMessageCount = sessionData.getMessages().stream()
+                .filter(msg -> "user".equals(msg.getRole()))
+                .count();
+
+        if (userMessageCount < 2) {
+            log.warn("Insufficient user messages for feedback generation: {}", userMessageCount);
+            // 기본 피드백 반환
+            Map<String, Object> defaultFeedback = Map.of(
+                    "논리적_사고력", Map.of("점수", 50, "코멘트", "토론 참여가 부족하여 정확한 평가가 어렵습니다"),
+                    "근거와_증거_활용", Map.of("점수", 50, "코멘트", "토론 참여가 부족하여 정확한 평가가 어렵습니다"),
+                    "의사소통_능력", Map.of("점수", 50, "코멘트", "토론 참여가 부족하여 정확한 평가가 어렵습니다"),
+                    "토론_태도와_매너", Map.of("점수", 50, "코멘트", "토론 참여가 부족하여 정확한 평가가 어렵습니다"),
+                    "창의성과_통찰력", Map.of("점수", 50, "코멘트", "토론 참여가 부족하여 정확한 평가가 어렵습니다"),
+                    "총점", 50,
+                    "종합_코멘트", "더 활발한 토론 참여를 통해 다양한 능력을 보여주세요!"
+            );
+
+            return FeedbackResponseDto.builder()
+                    .feedback(defaultFeedback)
+                    .build();
+        }
+
+        // Python API 호출: 토론 피드백 생성
+        Map<String, Object> feedback = pythonApiClient.generateFeedback(
+                sessionData.getTopic(),
+                sessionData.getUserPosition(),
+                sessionData.getAiPosition(),
+                sessionData.getMessages()
+        );
+
+        return FeedbackResponseDto.builder()
+                .feedback(feedback)
+                .build();
+    }
+
+    @Override
     public String getSessionStatus(String sessionId) {
         SessionData sessionData = sessionStore.get(sessionId);
         if (sessionData == null) {
@@ -179,6 +225,7 @@ public class NewscussServiceImpl implements NewscussService {
     }
 
     // 세션 데이터 내부 클래스
+    @Data
     static class SessionData {
         private String summary;
         private List<String> keywords;
@@ -188,70 +235,5 @@ public class NewscussServiceImpl implements NewscussService {
         private String aiPosition;
         private String difficulty;
         private List<Message> messages;
-
-        // Getters and Setters
-        public String getSummary() {
-            return summary;
-        }
-
-        public void setSummary(String summary) {
-            this.summary = summary;
-        }
-
-        public List<String> getKeywords() {
-            return keywords;
-        }
-
-        public void setKeywords(List<String> keywords) {
-            this.keywords = keywords;
-        }
-
-        public String getTopic() {
-            return topic;
-        }
-
-        public void setTopic(String topic) {
-            this.topic = topic;
-        }
-
-        public String getTopicDescription() {
-            return topicDescription;
-        }
-
-        public void setTopicDescription(String topicDescription) {
-            this.topicDescription = topicDescription;
-        }
-
-        public String getUserPosition() {
-            return userPosition;
-        }
-
-        public void setUserPosition(String userPosition) {
-            this.userPosition = userPosition;
-        }
-
-        public String getAiPosition() {
-            return aiPosition;
-        }
-
-        public void setAiPosition(String aiPosition) {
-            this.aiPosition = aiPosition;
-        }
-
-        public String getDifficulty() {
-            return difficulty;
-        }
-
-        public void setDifficulty(String difficulty) {
-            this.difficulty = difficulty;
-        }
-
-        public List<Message> getMessages() {
-            return messages;
-        }
-
-        public void setMessages(List<Message> messages) {
-            this.messages = messages;
-        }
     }
 }

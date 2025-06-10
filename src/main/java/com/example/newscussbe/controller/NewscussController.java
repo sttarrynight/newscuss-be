@@ -2,6 +2,7 @@ package com.example.newscussbe.controller;
 
 import com.example.newscussbe.dto.DiscussionRequestDto;
 import com.example.newscussbe.dto.DiscussionResponseDto;
+import com.example.newscussbe.dto.FeedbackResponseDto;
 import com.example.newscussbe.dto.KeywordSummaryResponseDto;
 import com.example.newscussbe.dto.MessageRequestDto;
 import com.example.newscussbe.dto.MessageResponseDto;
@@ -82,6 +83,15 @@ public class NewscussController {
     @GetMapping("/discussion/summary/{sessionId}")
     public ResponseEntity<SummaryResponseDto> getSummary(@PathVariable String sessionId) {
         SummaryResponseDto responseDto = newscussService.generateSummary(sessionId);
+        return ResponseEntity.ok(responseDto);
+    }
+
+    /**
+     * 토론 피드백 요청 (새로 추가)
+     */
+    @GetMapping("/discussion/feedback/{sessionId}")
+    public ResponseEntity<FeedbackResponseDto> getFeedback(@PathVariable String sessionId) {
+        FeedbackResponseDto responseDto = newscussService.generateFeedback(sessionId);
         return ResponseEntity.ok(responseDto);
     }
 

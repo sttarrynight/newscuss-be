@@ -1,8 +1,8 @@
 package com.example.newscussbe.service;
 
 import com.example.newscussbe.dto.DiscussionResponseDto;
+import com.example.newscussbe.dto.FeedbackResponseDto;
 import com.example.newscussbe.dto.KeywordSummaryResponseDto;
-import com.example.newscussbe.dto.Message;
 import com.example.newscussbe.dto.MessageResponseDto;
 import com.example.newscussbe.dto.SummaryResponseDto;
 import com.example.newscussbe.dto.TopicResponseDto;
@@ -34,6 +34,11 @@ public interface NewscussService {
      * 토론 요약 생성
      */
     SummaryResponseDto generateSummary(String sessionId);
+
+    /**
+     * 토론 피드백 생성 (새로 추가)
+     */
+    FeedbackResponseDto generateFeedback(String sessionId);
 
     /**
      * 세션 상태 확인 (디버깅용)
