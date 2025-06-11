@@ -9,18 +9,33 @@ import com.example.newscussbe.dto.MessageResponseDto;
 import com.example.newscussbe.dto.SummaryResponseDto;
 import com.example.newscussbe.dto.TopicResponseDto;
 import com.example.newscussbe.service.NewscussService;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import org.springframework.web.client.RequestCallback;
+import org.springframework.web.client.ResponseExtractor;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @Slf4j
 @Service
@@ -29,6 +44,10 @@ public class NewscussServiceImpl implements NewscussService {
 
     private final PythonApiClient pythonApiClient;
     private final ObjectMapper objectMapper;
+    private final RestTemplate restTemplate;
+
+    @Value("${python.api.base-url}")
+    private String pythonApiBaseUrl;
 
     // 세션 데이터 저장을 위한 ConcurrentHashMap
     private final ConcurrentHashMap<String, SessionData> sessionStore = new ConcurrentHashMap<>();
@@ -138,6 +157,160 @@ public class NewscussServiceImpl implements NewscussService {
         return MessageResponseDto.builder()
                 .aiMessage(aiResponseMessage)
                 .build();
+    }
+
+    @Override
+    public void processMessageStream(String sessionId, String message, SseEmitter emitter) {
+        log.info("Processing streaming message for session: {}", sessionId);
+
+        // 비동기로 처리
+        CompletableFuture.runAsync(() -> {
+            try {
+                SessionData sessionData = getSessionData(sessionId);
+
+                // 사용자 메시지 저장
+                Message userMessage = Message.builder()
+                        .role("user")
+                        .content(message)
+                        .timestamp(LocalDateTime.now())
+                        .build();
+                sessionData.getMessages().add(userMessage);
+
+                // Python API 스트리밍 호출
+                streamFromPythonApi(sessionData, emitter);
+
+            } catch (Exception e) {
+                log.error("Error in streaming message processing", e);
+                try {
+                    Map<String, Object> errorData = new HashMap<>();
+                    errorData.put("type", "error");
+                    errorData.put("error", e.getMessage());
+                    errorData.put("message", "스트리밍 중 오류가 발생했습니다.");
+
+                    emitter.send(SseEmitter.event()
+                            .data(objectMapper.writeValueAsString(errorData))
+                            .name("error"));
+                    emitter.completeWithError(e);
+                } catch (Exception sendError) {
+                    log.error("Error sending error message", sendError);
+                    emitter.completeWithError(sendError);
+                }
+            }
+        });
+    }
+
+    private void streamFromPythonApi(SessionData sessionData, SseEmitter emitter) {
+        try {
+            // Python API 스트리밍 엔드포인트 호출
+            String endpoint = pythonApiBaseUrl + "/discussion/message/stream";
+
+            Map<String, Object> requestMap = new HashMap<>();
+            requestMap.put("topic", sessionData.getTopic());
+            requestMap.put("userPosition", sessionData.getUserPosition());
+            requestMap.put("aiPosition", sessionData.getAiPosition());
+            requestMap.put("difficulty", sessionData.getDifficulty());
+            requestMap.put("messages", sessionData.getMessages());
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+
+            HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestMap, headers);
+
+            log.info("Calling Python streaming API: {}", endpoint);
+
+            // Python API 스트리밍 응답을 직접 클라이언트로 전달
+            ResponseEntity<String> response = restTemplate.postForEntity(endpoint, request, String.class);
+
+            if (response.getBody() != null) {
+                String responseBody = response.getBody();
+                String[] lines = responseBody.split("\n");
+
+                StringBuilder accumulatedMessage = new StringBuilder();
+
+                for (String line : lines) {
+                    log.debug("Processing line: {}", line);
+
+                    if (line.startsWith("data: ")) {
+                        String jsonData = line.substring(6).trim();
+                        if (jsonData.isEmpty()) continue;
+
+                        try {
+                            JsonNode dataNode = objectMapper.readTree(jsonData);
+                            String type = dataNode.get("type").asText();
+
+                            if ("chunk".equals(type)) {
+                                String content = dataNode.get("content").asText();
+                                accumulatedMessage.append(content);
+
+                                log.debug("Sending chunk: {}", content);
+
+                                // 청크를 바로 전송 (data: 접두사 없이)
+                                emitter.send(jsonData);
+
+                            } else if ("end".equals(type)) {
+                                // 최종 메시지를 세션에 저장
+                                String finalMessage = dataNode.get("final_message").asText();
+
+                                Message aiMessage = Message.builder()
+                                        .role("ai")
+                                        .content(finalMessage)
+                                        .timestamp(LocalDateTime.now())
+                                        .build();
+                                sessionData.getMessages().add(aiMessage);
+
+                                log.info("Sending completion signal with final message length: {}", finalMessage.length());
+
+                                // 완료 신호 전송
+                                emitter.send(jsonData);
+                                emitter.complete();
+                                return;
+
+                            } else if ("error".equals(type)) {
+                                // 에러 처리
+                                emitter.send(jsonData);
+                                emitter.completeWithError(new RuntimeException(dataNode.get("message").asText()));
+                                return;
+                            }
+                        } catch (Exception parseError) {
+                            log.error("Error parsing SSE data: {}", jsonData, parseError);
+                        }
+                    }
+                }
+
+                // 정상 완료되지 않은 경우 강제 완료
+                if (accumulatedMessage.length() > 0) {
+                    Message aiMessage = Message.builder()
+                            .role("ai")
+                            .content(accumulatedMessage.toString())
+                            .timestamp(LocalDateTime.now())
+                            .build();
+                    sessionData.getMessages().add(aiMessage);
+
+                    Map<String, Object> endData = new HashMap<>();
+                    endData.put("type", "end");
+                    endData.put("final_message", accumulatedMessage.toString());
+
+                    emitter.send(objectMapper.writeValueAsString(endData));
+                }
+
+                emitter.complete();
+            }
+
+        } catch (Exception e) {
+            log.error("Error streaming from Python API", e);
+            try {
+                Map<String, Object> errorData = new HashMap<>();
+                errorData.put("type", "error");
+                errorData.put("error", e.getMessage());
+                errorData.put("message", "Python API 스트리밍 중 오류가 발생했습니다.");
+
+                emitter.send(objectMapper.writeValueAsString(errorData));
+                emitter.completeWithError(e);
+            } catch (Exception sendError) {
+                log.error("Error sending error message", sendError);
+                emitter.completeWithError(e);
+            }
+        }
     }
 
     @Override

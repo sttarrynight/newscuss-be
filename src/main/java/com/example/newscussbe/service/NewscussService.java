@@ -7,6 +7,7 @@ import com.example.newscussbe.dto.MessageResponseDto;
 import com.example.newscussbe.dto.SummaryResponseDto;
 import com.example.newscussbe.dto.TopicResponseDto;
 import java.util.List;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 public interface NewscussService {
 
@@ -26,9 +27,14 @@ public interface NewscussService {
     DiscussionResponseDto startDiscussion(String sessionId, String topic, String userPosition, String difficulty);
 
     /**
-     * 사용자 메시지 처리 및 AI 응답 생성
+     * 사용자 메시지 처리 및 AI 응답 생성 (기존 방식)
      */
     MessageResponseDto processMessage(String sessionId, String message);
+
+    /**
+     * 사용자 메시지 처리 및 AI 응답 생성 (스트리밍 방식) - 새로 추가
+     */
+    void processMessageStream(String sessionId, String message, SseEmitter emitter);
 
     /**
      * 토론 요약 생성

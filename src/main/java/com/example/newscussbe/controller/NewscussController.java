@@ -12,6 +12,8 @@ import com.example.newscussbe.dto.TopicResponseDto;
 import com.example.newscussbe.dto.UrlRequestDto;
 import com.example.newscussbe.service.NewscussService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,8 +21,11 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+@Slf4j
 @RestController
 @RequestMapping("/api")
 @CrossOrigin(origins = "*") // 모든 출처에서의 요청 허용 (개발 환경용)
@@ -66,7 +71,7 @@ public class NewscussController {
     }
 
     /**
-     * 토론 메시지 전송
+     * 토론 메시지 전송 (기존 방식 유지)
      */
     @PostMapping("/discussion/message")
     public ResponseEntity<MessageResponseDto> sendMessage(@RequestBody MessageRequestDto requestDto) {
@@ -75,6 +80,31 @@ public class NewscussController {
                 requestDto.getMessage()
         );
         return ResponseEntity.ok(responseDto);
+    }
+
+    /**
+     * 토론 메시지 전송 (스트리밍 방식) - 새로 추가
+     */
+    @PostMapping(value = "/discussion/message/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamMessage(@RequestBody MessageRequestDto requestDto) {
+        log.info("Starting SSE stream for session: {}", requestDto.getSessionId());
+
+        SseEmitter emitter = new SseEmitter(120000L); // 120초 타임아웃
+
+        // CORS 설정
+        emitter.onCompletion(() -> log.info("SSE completed for session: {}", requestDto.getSessionId()));
+        emitter.onTimeout(() -> log.warn("SSE timeout for session: {}", requestDto.getSessionId()));
+        emitter.onError((ex) -> log.error("SSE error for session: {}", requestDto.getSessionId(), ex));
+
+        try {
+            // 백그라운드에서 스트리밍 처리
+            newscussService.processMessageStream(requestDto.getSessionId(), requestDto.getMessage(), emitter);
+        } catch (Exception e) {
+            log.error("Error starting message stream", e);
+            emitter.completeWithError(e);
+        }
+
+        return emitter;
     }
 
     /**
