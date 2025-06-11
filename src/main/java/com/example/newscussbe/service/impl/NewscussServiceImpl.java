@@ -161,7 +161,7 @@ public class NewscussServiceImpl implements NewscussService {
 
     @Override
     public void processMessageStream(String sessionId, String message, SseEmitter emitter) {
-        log.info("Processing streaming message for session: {}", sessionId);
+        log.info("🚀 Processing streaming message for session: {}", sessionId);
 
         // 비동기로 처리
         CompletableFuture.runAsync(() -> {
@@ -176,32 +176,30 @@ public class NewscussServiceImpl implements NewscussService {
                         .build();
                 sessionData.getMessages().add(userMessage);
 
-                // Python API 스트리밍 호출
-                streamFromPythonApi(sessionData, emitter);
+                // Python API 스트리밍 호출 - 최적화된 버전
+                streamFromPythonApiOptimized(sessionData, emitter);
 
             } catch (Exception e) {
-                log.error("Error in streaming message processing", e);
+                log.error("💥 Error in streaming message processing", e);
                 try {
-                    Map<String, Object> errorData = new HashMap<>();
-                    errorData.put("type", "error");
-                    errorData.put("error", e.getMessage());
-                    errorData.put("message", "스트리밍 중 오류가 발생했습니다.");
-
+                    // JSON 형태로 에러 데이터 전송
                     emitter.send(SseEmitter.event()
-                            .data(objectMapper.writeValueAsString(errorData))
-                            .name("error"));
+                            .name("message")
+                            .data("{\"type\":\"error\",\"message\":\"" + e.getMessage() + "\"}"));
                     emitter.completeWithError(e);
                 } catch (Exception sendError) {
-                    log.error("Error sending error message", sendError);
+                    log.error("💥 Error sending error message", sendError);
                     emitter.completeWithError(sendError);
                 }
             }
         });
     }
 
-    private void streamFromPythonApi(SessionData sessionData, SseEmitter emitter) {
+    /**
+     * 최적화된 스트리밍 메서드 - 안정적인 연결 관리
+     */
+    private void streamFromPythonApiOptimized(SessionData sessionData, SseEmitter emitter) {
         try {
-            // Python API 스트리밍 엔드포인트 호출
             String endpoint = pythonApiBaseUrl + "/discussion/message/stream";
 
             Map<String, Object> requestMap = new HashMap<>();
@@ -213,106 +211,156 @@ public class NewscussServiceImpl implements NewscussService {
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set("Accept", "text/event-stream");
 
             HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestMap, headers);
 
-            log.info("Calling Python streaming API: {}", endpoint);
+            log.info("📡 Starting optimized streaming for session");
 
-            // Python API 스트리밍 응답을 직접 클라이언트로 전달
-            ResponseEntity<String> response = restTemplate.postForEntity(endpoint, request, String.class);
+            RequestCallback requestCallback = restTemplate.httpEntityCallback(request, String.class);
 
-            if (response.getBody() != null) {
-                String responseBody = response.getBody();
-                String[] lines = responseBody.split("\n");
-
+            ResponseExtractor<Void> responseExtractor = response -> {
                 StringBuilder accumulatedMessage = new StringBuilder();
+                boolean hasCompleted = false;
 
-                for (String line : lines) {
-                    log.debug("Processing line: {}", line);
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.getBody()))) {
+                    String line;
 
-                    if (line.startsWith("data: ")) {
-                        String jsonData = line.substring(6).trim();
-                        if (jsonData.isEmpty()) continue;
+                    while ((line = reader.readLine()) != null && !hasCompleted) {
+                        if (line.trim().isEmpty()) {
+                            continue;
+                        }
 
-                        try {
-                            JsonNode dataNode = objectMapper.readTree(jsonData);
-                            String type = dataNode.get("type").asText();
+                        if (line.startsWith("data: ")) {
+                            String jsonData = line.substring(6).trim();
 
-                            if ("chunk".equals(type)) {
-                                String content = dataNode.get("content").asText();
-                                accumulatedMessage.append(content);
-
-                                log.debug("Sending chunk: {}", content);
-
-                                // 청크를 바로 전송 (data: 접두사 없이)
-                                emitter.send(jsonData);
-
-                            } else if ("end".equals(type)) {
-                                // 최종 메시지를 세션에 저장
-                                String finalMessage = dataNode.get("final_message").asText();
-
-                                Message aiMessage = Message.builder()
-                                        .role("ai")
-                                        .content(finalMessage)
-                                        .timestamp(LocalDateTime.now())
-                                        .build();
-                                sessionData.getMessages().add(aiMessage);
-
-                                log.info("Sending completion signal with final message length: {}", finalMessage.length());
-
-                                // 완료 신호 전송
-                                emitter.send(jsonData);
-                                emitter.complete();
-                                return;
-
-                            } else if ("error".equals(type)) {
-                                // 에러 처리
-                                emitter.send(jsonData);
-                                emitter.completeWithError(new RuntimeException(dataNode.get("message").asText()));
-                                return;
+                            if (jsonData.isEmpty() || jsonData.equals("{}")) {
+                                continue;
                             }
-                        } catch (Exception parseError) {
-                            log.error("Error parsing SSE data: {}", jsonData, parseError);
+
+                            try {
+                                JsonNode dataNode = objectMapper.readTree(jsonData);
+                                String type = dataNode.get("type").asText();
+
+                                if ("chunk".equals(type)) {
+                                    String content = dataNode.get("content").asText();
+                                    accumulatedMessage.append(content);
+
+                                    // 청크만 전송
+                                    String chunkJson = String.format(
+                                            "{\"type\":\"chunk\",\"content\":\"%s\"}",
+                                            content.replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "")
+                                    );
+
+                                    emitter.send(SseEmitter.event()
+                                            .name("message")
+                                            .data(chunkJson));
+
+                                } else if ("end".equals(type)) {
+                                    String finalMessage = dataNode.has("final_message")
+                                            ? dataNode.get("final_message").asText()
+                                            : accumulatedMessage.toString();
+
+                                    log.info("🏁 Stream completed. Message length: {}", finalMessage.length());
+
+                                    // 세션에 저장
+                                    Message aiMessage = Message.builder()
+                                            .role("ai")
+                                            .content(finalMessage)
+                                            .timestamp(LocalDateTime.now())
+                                            .build();
+                                    sessionData.getMessages().add(aiMessage);
+
+                                    // 완료 신호 전송
+                                    emitter.send(SseEmitter.event()
+                                            .name("message")
+                                            .data("{\"type\":\"end\"}"));
+
+                                    hasCompleted = true;
+                                    emitter.complete();
+                                    return null;
+
+                                } else if ("error".equals(type)) {
+                                    String errorMessage = dataNode.get("message").asText();
+                                    log.error("❌ Error from Python API: {}", errorMessage);
+
+                                    String errorJson = String.format(
+                                            "{\"type\":\"error\",\"message\":\"%s\"}",
+                                            errorMessage.replace("\"", "\\\"")
+                                    );
+
+                                    emitter.send(SseEmitter.event()
+                                            .name("message")
+                                            .data(errorJson));
+
+                                    hasCompleted = true;
+                                    emitter.completeWithError(new RuntimeException(errorMessage));
+                                    return null;
+                                }
+
+                            } catch (Exception parseError) {
+                                log.error("🚫 Error parsing SSE data: {}", jsonData, parseError);
+                                // 파싱 에러는 무시하고 계속 진행
+                                continue;
+                            }
+                        }
+                    }
+
+                    // 정상적으로 완료되지 않은 경우 강제 완료
+                    if (!hasCompleted && accumulatedMessage.length() > 0) {
+                        log.warn("⚠️ Stream ended without proper completion signal, forcing completion");
+
+                        String finalMessage = accumulatedMessage.toString();
+
+                        Message aiMessage = Message.builder()
+                                .role("ai")
+                                .content(finalMessage)
+                                .timestamp(LocalDateTime.now())
+                                .build();
+                        sessionData.getMessages().add(aiMessage);
+
+                        emitter.send(SseEmitter.event()
+                                .name("message")
+                                .data("{\"type\":\"end\"}"));
+                    }
+
+                    if (!hasCompleted) {
+                        emitter.complete();
+                    }
+
+                } catch (Exception streamError) {
+                    log.error("💥 Error in stream processing", streamError);
+                    if (!hasCompleted) {
+                        try {
+                            emitter.send(SseEmitter.event()
+                                    .name("message")
+                                    .data("{\"type\":\"error\",\"message\":\"스트리밍 처리 중 오류가 발생했습니다\"}"));
+                            emitter.completeWithError(streamError);
+                        } catch (Exception e) {
+                            log.error("Failed to send error message", e);
+                            emitter.completeWithError(streamError);
                         }
                     }
                 }
 
-                // 정상 완료되지 않은 경우 강제 완료
-                if (accumulatedMessage.length() > 0) {
-                    Message aiMessage = Message.builder()
-                            .role("ai")
-                            .content(accumulatedMessage.toString())
-                            .timestamp(LocalDateTime.now())
-                            .build();
-                    sessionData.getMessages().add(aiMessage);
+                return null;
+            };
 
-                    Map<String, Object> endData = new HashMap<>();
-                    endData.put("type", "end");
-                    endData.put("final_message", accumulatedMessage.toString());
-
-                    emitter.send(objectMapper.writeValueAsString(endData));
-                }
-
-                emitter.complete();
-            }
+            restTemplate.execute(endpoint, HttpMethod.POST, requestCallback, responseExtractor);
 
         } catch (Exception e) {
-            log.error("Error streaming from Python API", e);
+            log.error("💥 Error streaming from Python API", e);
             try {
-                Map<String, Object> errorData = new HashMap<>();
-                errorData.put("type", "error");
-                errorData.put("error", e.getMessage());
-                errorData.put("message", "Python API 스트리밍 중 오류가 발생했습니다.");
-
-                emitter.send(objectMapper.writeValueAsString(errorData));
+                emitter.send(SseEmitter.event()
+                        .name("message")
+                        .data("{\"type\":\"error\",\"message\":\"연결 오류가 발생했습니다\"}"));
                 emitter.completeWithError(e);
             } catch (Exception sendError) {
-                log.error("Error sending error message", sendError);
+                log.error("💥 Error sending error message", sendError);
                 emitter.completeWithError(e);
             }
         }
     }
-
     @Override
     public SummaryResponseDto generateSummary(String sessionId) {
         log.info("Generating summary for session: {}", sessionId);
